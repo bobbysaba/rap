@@ -4,9 +4,9 @@ import datetime as dt
 import xarray as xr
 from siphon.catalog import TDSCatalog
 
-# define function to get rap data (13km gridpsace)
+# define function to get rap data
 def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, dict_path = False):
-    # res: accepts integer values of 13 or 20 for the desired resolution of the RAP data
+    # res: accepts integer values of 13 or 20 for the desired resolution of the data
     # start: list of datetime objects indicating the start day/time for each provided period
     # end: list of datetime objects indicating the end day/time for each provided period
         # start and end times should be in UTC
@@ -17,9 +17,9 @@ def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, 
         # bounds are [west, east, south, north]
         # FORMATTING: lon values range from -139 to -57
         # False returns whole domain
-    # save_nc: path to save nc files
+    # nc_path: path to save nc files
         # false: no nc files are saved
-    # save_dict: path to save dictionary pickle file
+    # dict_path: path to save dictionary pickle file
         # false: no pickle file is created
     # returns dictionary of rap data
     
