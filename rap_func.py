@@ -1,27 +1,37 @@
 import pickle
+import numpy as np
 import pandas as pd
-import datetime as dt
 import xarray as xr
+import datetime as dt
 from siphon.catalog import TDSCatalog
+from xarray.backends import NetCDF4DataStore
 
-# define function to get rap data
-def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, dict_path = False):
-    # res: accepts integer values of 13 or 20 for the desired resolution of the data
+# define function to get rap data (13km gridpsace)
+def get_rap(res, start, end, bounds = False, variables= False, wind_transform = False, nc_path = False, dict_path = False):
+    # res: accepts integer values of 13 or 20 for the desired resolution of the RAP data
     # start: list of datetime objects indicating the start day/time for each provided period
     # end: list of datetime objects indicating the end day/time for each provided period
         # start and end times should be in UTC
     # variables: list of variables that you would like to pull from the data files
         # All variables will be collected if False
-        # find an example file with vars here: https://ruc.noaa.gov/ruc/ruc2vars.html
+        # find vars here: https://ruc.noaa.gov/ruc/ruc2vars.html
     # bounds: list of desired coordinate bounds
         # bounds are [west, east, south, north]
         # FORMATTING: lon values range from -139 to -57
         # False returns whole domain
-    # nc_path: path to save nc files
+    # wind_transform: boolean value
+        # false: no transformation will be performed
+        # true: winds will be transformed from Lambert Conformal to ground relative 
+        # more can be found at the bottom of the following page: https://ruc.noaa.gov/ruc/RUC.faq.html
+    # save_nc: path to save nc files
         # false: no nc files are saved
-    # dict_path: path to save dictionary pickle file
+    # save_dict: path to save dictionary pickle file
         # false: no pickle file is created
     # returns dictionary of rap data
+    
+    # set constants for wind transformation 
+    rc = 0.422618 * 0.17453
+    lon_xx = -95
     
     # determine the resoltuion URL code
     if res == 13:
@@ -74,6 +84,7 @@ def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, 
                 try:
                     cat = TDSCatalog('https://www.ncei.noaa.gov/thredds/catalog/model-rap' + res_code + 'anl-old/' + date1 + '/' + date2 + '/catalog.xml')
                 except:
+                    del rap_data[date2]['{:02d}'.format(t.hour)]
                     print('Invalid URL on ' + t.strftime('%Y%m%d @ %H:%M:%S'))
                     continue
 
@@ -81,6 +92,7 @@ def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, 
             try:
                 ds = cat.datasets['rap_' + res_code + '_' + date2 + '_' + '{:02d}'.format(t.hour) + '00' + '_000.grb2']
             except:
+                del rap_data[date2]['{:02d}'.format(t.hour)]
                 print('No data exists on ' + t.strftime('%Y%m%d @ %H:%M:%S'))
                 continue
 
@@ -100,21 +112,47 @@ def get_rap(res, start, end, bounds = False, variables= False, nc_path = False, 
                 query.lonlat_box(bounds[0], bounds[1], bounds[2], bounds[3])
 
             # attain a netCDF of your variables
-            data = ncss.get_data(query)
+            ds = xr.open_dataset(NetCDF4DataStore(ncss.get_data(query)))
+            
+            # prepare to average over time dimension for ease as the time dimension in this case is 1
+            time_vars = [var for var in ds.variables if 'time' in ds[var].dims]
+            
+            # loop through the necessary vars, average appropriately, and overwrite the old variable
+            for v in time_vars:
+                if v != 'time':
+                    ds[v] = ds[v].mean(dim = 'time')
+
+            # convert winds if necessary
+            if wind_transform == True:
+                # calculate angle based on lon
+                a = rc * (ds['lon'] - lon_xx) * (np.pi/180)
+                sin_a = np.sin(a)
+                cos_a = np.cos(a)
+                
+                # transform wind accordingly
+                for v in ds.variables.keys():
+                    if 'component' in v:
+                        # isolate the height_above ground variables if necessary
+                        if 'v-c' in v and 'ground' in v:
+                            for i in range(len(v)):
+                                ds[v][i,:,:] = (ds[v][i,:,:] * cos_a) - (ds['u-component_of_wind_height_above_ground'][i,:,:] * sin_a)
+                                ds['u-component_of_wind_height_above_ground'][i,:,:] = (ds[v][i,:,:] * sin_a) + (ds['u-component_of_wind_height_above_ground'][i,:,:] * cos_a)
+                        if 'v-c' in v and 'ground' not in v:
+                            for i in range(len(v)):
+                                ds[v][i,:,:] = (ds[v][i,:,:] * cos_a) - (ds['u-component_of_wind_isobaric'][i,:,:] * sin_a)
+                                ds['u-component_of_wind_isobaric'][i,:,:] = (ds[v][i,:,:] * sin_a) + (ds['u-component_of_wind_isobaric'][i,:,:] * cos_a)
             
             # create the dictionary layer
-            for v in data.variables.keys():
-                rap_data[date2]['{:02d}'.format(t.hour)][v] = data[v][:]
+            for v in ds.variables.keys():
+                rap_data[date2]['{:02d}'.format(t.hour)][v] = ds[v].data
             
             # save nc file if specified
             if nc_path != False:
-                # convert to xarray dataset to save easier
-                xr_nc = xr.open_dataset(xr.backends.NetCDF4DataStore(data))
                 # save nc file (overwriting previous file if applicable)
-                xr_nc.to_netcdf(nc_path + date2 + '_' + '{:02d}'.format(t.hour) + '.nc', mode = 'w')
+                ds.to_netcdf(nc_path + date2 + '_' + '{:02d}'.format(t.hour) + '.nc', mode = 'w')
             
                 # close nc files
-                xr_nc.close()
+                ds.close()
             
             # print the RAP data processed
             print('RAP data on ' + date2 + ' @ ' + '{:02d}'.format(t.hour) + ' has been processed.')
